@@ -8,6 +8,7 @@ from argparse import ArgumentParser
 import torch
 import numpy as np
 import random
+import wandb
 from torch import cuda
 from torch.utils.data import DataLoader
 from torch.utils.data.dataset import random_split
@@ -27,6 +28,8 @@ def seed_everything(seed):
     np.random.seed(seed)
     random.seed(seed)
 
+def log_wandb(step, loss, metrics):
+    wandb.log({"step": step, "loss": loss, "metrics": metrics})
 
 def parse_args():
     parser = ArgumentParser()
@@ -44,7 +47,7 @@ def parse_args():
     parser.add_argument('--input_size', type=int, default=1024)
     parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--learning_rate', type=float, default=1e-3)
-    parser.add_argument('--max_epoch', type=int, default=2)
+    parser.add_argument('--max_epoch', type=int, default=150)
     parser.add_argument('--save_interval', type=int, default=5)
     parser.add_argument('--ignore_tags', type=list, default=['masked', 'excluded-region', 'maintable', 'stamp'])
     parser.add_argument('--seed', type=int, default=42)
@@ -60,16 +63,26 @@ def do_training(data_dir, model_dir, device, image_size, input_size, num_workers
                 learning_rate, max_epoch, save_interval, ignore_tags, seed):
     seed_everything(seed)
     
-    dataset = SceneTextDataset(
+
+    train_dataset = SceneTextDataset(
         data_dir,
-        split='train',
+        split='train1',
         image_size=image_size,
         crop_size=input_size,
         ignore_tags=ignore_tags
     )
-    dataset = EASTDataset(dataset)
     
-    train_dataset, val_dataset = random_split(dataset, [80,20])
+    val_dataset = SceneTextDataset(
+        data_dir,
+        split='val1',
+        image_size=image_size,
+        crop_size=input_size,
+        ignore_tags=ignore_tags
+    )
+    train_dataset = EASTDataset(train_dataset)
+    val_dataset = EASTDataset(val_dataset)
+    
+    # train_dataset, val_dataset = random_split(dataset, [80,20])
     num_batches = math.ceil(len(train_dataset) / batch_size) 
 
     train_loader = DataLoader(
@@ -95,9 +108,11 @@ def do_training(data_dir, model_dir, device, image_size, input_size, num_workers
     scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[max_epoch // 2], gamma=0.1)
 
     best_val_loss = np.inf
+    wandb.init(entity="oif", project='Data_Centric', name='test')
     for epoch in range(max_epoch):
         train_start = time.time()
         model.train()
+        epoch_loss, epoch_loss_cls, epoch_loss_angle, epoch_loss_iou = 0, 0, 0, 0
         train_loss = 0
         val_loss = 0
         print()
@@ -106,22 +121,32 @@ def do_training(data_dir, model_dir, device, image_size, input_size, num_workers
             for img, gt_score_map, gt_geo_map, roi_mask in train_loader:
                 pbar.set_description('[Epoch {}]'.format(epoch + 1)) # 진행 바 왼쪽에 Epoch 진행 상황 추가
 
-                loss, extra_info = model.train_step(img, gt_score_map, gt_geo_map, roi_mask)
+                loss, extra_info1 = model.train_step(img, gt_score_map, gt_geo_map, roi_mask)
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
 
                 train_loss += loss.item()
+                epoch_loss += train_loss
+                epoch_loss_cls += extra_info1['cls_loss']
+                epoch_loss_angle += extra_info1['angle_loss']
+                epoch_loss_iou += extra_info1['iou_loss']
 
                 pbar.update(1) # 수동으로 진행률을 1씩 증가 시킨다
                 train_dict = {
-                    '(Train)Class loss': extra_info['cls_loss'], '(Train)Angle loss': extra_info['angle_loss'],
-                    '(Train)IoU loss': extra_info['iou_loss']
+                    '(Train)Class loss': extra_info1['cls_loss'], '(Train)Angle loss': extra_info1['angle_loss'],
+                    '(Train)IoU loss': extra_info1['iou_loss']
                 }
                 pbar.set_postfix(train_dict) # 진행 바 오른쪽에 Train Loss 설명 추가
 
                 mean_train_loss = train_loss / num_batches
 
+                # wandb 로그 기록
+                step = epoch * num_batches + pbar.n
+                log_wandb(step, train_loss, train_dict)
+                
+                train_loss = 0
+                
             with torch.no_grad():
                 val_start = time.time()
                 model.eval()      
@@ -135,7 +160,7 @@ def do_training(data_dir, model_dir, device, image_size, input_size, num_workers
                     best_val_loss = mean_val_loss
                     best_val_loss_epoch = epoch+1
 
-                print(f'(Val) Class loss={extra_info["cls_loss"]}, (Val) Angle loss={extra_info["angle_loss"]}, (Val) IoU loss={extra_info["iou_loss"]}')
+                print(f'(Val) Class loss={extra_info1["cls_loss"]}, (Val) Angle loss={extra_info["angle_loss"]}, (Val) IoU loss={extra_info["iou_loss"]}')
 
             print('(Train) Mean loss: {:.4f} | Elapsed time: {}'.format(mean_train_loss, timedelta(seconds=time.time() - train_start)))
             print('(Val)   Mean loss: {:.4f} | Elapsed time: {}'.format(mean_val_loss, timedelta(seconds=time.time() - val_start)))
@@ -143,6 +168,19 @@ def do_training(data_dir, model_dir, device, image_size, input_size, num_workers
             
 
         scheduler.step()
+        
+        mean_loss = epoch_loss / num_batches
+        mean_loss_cls = epoch_loss_cls / num_batches
+        mean_loss_angle = epoch_loss_angle / num_batches
+        mean_loss_iou = epoch_loss_iou / num_batches
+
+        log_dict = {
+            "mean_loss": mean_loss,
+            "mean_loss_cls": mean_loss_cls,
+            "mean_loss_angle": mean_loss_angle,
+            "mean_loss_iou": mean_loss_iou
+        }
+        wandb.log(log_dict)
 
         if (epoch + 1) % save_interval == 0:
             if not osp.exists(model_dir):

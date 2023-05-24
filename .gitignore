@@ -1,6 +1,6 @@
 # 폴더 무시
 __pycache__/
-
+wandb/
 
 # pth 파일 무시
 *.pth
