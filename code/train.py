@@ -15,6 +15,19 @@ from east_dataset import EASTDataset
 from dataset import SceneTextDataset
 from model import EAST
 
+import random
+import numpy as np
+
+
+def seed_everything(seed):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)  # if use multi-GPU
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    np.random.seed(seed)
+    random.seed(seed)
+
 
 def parse_args():
     parser = ArgumentParser()
@@ -36,6 +49,8 @@ def parse_args():
     parser.add_argument('--save_interval', type=int, default=5)
     parser.add_argument('--ignore_tags', type=list, default=['masked', 'excluded-region', 'maintable', 'stamp'])
 
+    parser.add_argument('--seed', type=int, default=42)
+
     args = parser.parse_args()
 
     if args.input_size % 32 != 0:
@@ -45,7 +60,9 @@ def parse_args():
 
 
 def do_training(data_dir, model_dir, device, image_size, input_size, num_workers, batch_size,
-                learning_rate, max_epoch, save_interval, ignore_tags):
+                learning_rate, max_epoch, save_interval, ignore_tags, seed):
+    seed_everything(seed)
+    
     dataset = SceneTextDataset(
         data_dir,
         split='train',
