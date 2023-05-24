@@ -11,13 +11,13 @@ import random
 import wandb
 from torch import cuda
 from torch.utils.data import DataLoader
-from torch.utils.data.dataset import random_split
 from torch.optim import lr_scheduler
 from tqdm import tqdm
 
 from east_dataset import EASTDataset
 from dataset import SceneTextDataset
 from model import EAST
+from early_stopping import EarlyStopping
 
 def seed_everything(seed):
     torch.manual_seed(seed)
@@ -35,14 +35,10 @@ def parse_args():
     parser = ArgumentParser()
 
     # Conventional args
-    parser.add_argument('--data_dir', type=str,
-                        default=os.environ.get('SM_CHANNEL_TRAIN', '../data/medical'))
-    parser.add_argument('--model_dir', type=str, default=os.environ.get('SM_MODEL_DIR',
-                                                                        'trained_models'))
-
+    parser.add_argument('--data_dir', type=str, default=os.environ.get('SM_CHANNEL_TRAIN', '../data/medical'))
+    parser.add_argument('--model_dir', type=str, default=os.environ.get('SM_MODEL_DIR','trained_models'))
     parser.add_argument('--device', default='cuda' if cuda.is_available() else 'cpu')
     parser.add_argument('--num_workers', type=int, default=8)
-
     parser.add_argument('--image_size', type=int, default=2048)
     parser.add_argument('--input_size', type=int, default=1024)
     parser.add_argument('--batch_size', type=int, default=8)
@@ -51,7 +47,6 @@ def parse_args():
     parser.add_argument('--save_interval', type=int, default=5)
     parser.add_argument('--ignore_tags', type=list, default=['masked', 'excluded-region', 'maintable', 'stamp'])
     parser.add_argument('--seed', type=int, default=42)
-
     args = parser.parse_args()
 
     if args.input_size % 32 != 0:
@@ -61,12 +56,12 @@ def parse_args():
 
 def do_training(data_dir, model_dir, device, image_size, input_size, num_workers, batch_size,
                 learning_rate, max_epoch, save_interval, ignore_tags, seed):
+
     seed_everything(seed)
-    
 
     train_dataset = SceneTextDataset(
         data_dir,
-        split='train1',
+        split='train2',
         image_size=image_size,
         crop_size=input_size,
         ignore_tags=ignore_tags
@@ -74,15 +69,14 @@ def do_training(data_dir, model_dir, device, image_size, input_size, num_workers
     
     val_dataset = SceneTextDataset(
         data_dir,
-        split='val1',
+        split='val2',
         image_size=image_size,
         crop_size=input_size,
         ignore_tags=ignore_tags
     )
+
     train_dataset = EASTDataset(train_dataset)
     val_dataset = EASTDataset(val_dataset)
-    
-    # train_dataset, val_dataset = random_split(dataset, [80,20])
     num_batches = math.ceil(len(train_dataset) / batch_size) 
 
     train_loader = DataLoader(
@@ -106,6 +100,7 @@ def do_training(data_dir, model_dir, device, image_size, input_size, num_workers
     model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[max_epoch // 2], gamma=0.1)
+    early_stopping = EarlyStopping(patience=150, delta=0.0, mode='min', verbose=False)
 
     best_val_loss = np.inf
     wandb.init(entity="oif", project='Data_Centric', name='test')
@@ -140,7 +135,10 @@ def do_training(data_dir, model_dir, device, image_size, input_size, num_workers
                 pbar.set_postfix(train_dict) # 진행 바 오른쪽에 Train Loss 설명 추가
 
                 mean_train_loss = train_loss / num_batches
-
+                early_stopping(mean_train_loss)
+                if early_stopping.early_stop:
+                    raise SystemExit(0)
+                
                 # wandb 로그 기록
                 step = epoch * num_batches + pbar.n
                 log_wandb(step, train_loss, train_dict)
@@ -160,12 +158,11 @@ def do_training(data_dir, model_dir, device, image_size, input_size, num_workers
                     best_val_loss = mean_val_loss
                     best_val_loss_epoch = epoch+1
 
-                print(f'(Val) Class loss={extra_info1["cls_loss"]}, (Val) Angle loss={extra_info["angle_loss"]}, (Val) IoU loss={extra_info["iou_loss"]}')
+                print(f'(Val) Class loss={extra_info["cls_loss"]}, (Val) Angle loss={extra_info["angle_loss"]}, (Val) IoU loss={extra_info["iou_loss"]}')
 
             print('(Train) Mean loss: {:.4f} | Elapsed time: {}'.format(mean_train_loss, timedelta(seconds=time.time() - train_start)))
             print('(Val)   Mean loss: {:.4f} | Elapsed time: {}'.format(mean_val_loss, timedelta(seconds=time.time() - val_start)))
             print('Best Validation Loss: {:.4f} at Epoch {}'.format(best_val_loss, best_val_loss_epoch))
-            
 
         scheduler.step()
         
