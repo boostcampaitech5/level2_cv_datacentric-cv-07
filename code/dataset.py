@@ -348,7 +348,7 @@ class SceneTextDataset(Dataset):
 
         self.anno = anno
         self.image_fnames = sorted(anno['images'].keys())
-        self.image_dir = osp.join(root_dir, 'img', split)
+        self.image_dir = osp.join(root_dir, 'img', 'train')
 
         self.image_size, self.crop_size = image_size, crop_size
         self.color_jitter, self.normalize = color_jitter, normalize
