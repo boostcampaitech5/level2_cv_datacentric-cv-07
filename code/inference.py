@@ -12,21 +12,20 @@ from tqdm import tqdm
 
 from detect import detect
 
-
 CHECKPOINT_EXTENSIONS = ['.pth', '.ckpt']
-
 
 def parse_args():
     parser = ArgumentParser()
 
     # Conventional args
-    parser.add_argument('--data_dir', default=os.environ.get('SM_CHANNEL_EVAL', '../data/medical'))
+    parser.add_argument('--data_dir', default=os.environ.get('SM_CHANNEL_EVAL', '/opt/ml/input/code/data/medical/'))
     parser.add_argument('--model_dir', default=os.environ.get('SM_CHANNEL_MODEL', 'trained_models'))
     parser.add_argument('--output_dir', default=os.environ.get('SM_OUTPUT_DATA_DIR', 'predictions'))
 
     parser.add_argument('--device', default='cuda' if cuda.is_available() else 'cpu')
     parser.add_argument('--input_size', type=int, default=2048)
     parser.add_argument('--batch_size', type=int, default=5)
+    parser.add_argument('--weight_name', type=str, default='best_20.pth') # Inference하고 싶은 pre-trained weight 불러오기
 
     args = parser.parse_args()
 
@@ -37,7 +36,7 @@ def parse_args():
 
 
 def do_inference(model, ckpt_fpath, data_dir, input_size, batch_size, split='test'):
-    model.load_state_dict(torch.load(ckpt_fpath, map_location='cpu'))
+    model.load_state_dict(torch.load(ckpt_fpath, map_location='cpu')['model_state_dict'])
     model.eval()
 
     image_fnames, by_sample_bboxes = [], []
@@ -67,7 +66,7 @@ def main(args):
     model = EAST(pretrained=False).to(args.device)
 
     # Get paths to checkpoint files
-    ckpt_fpath = osp.join(args.model_dir, 'latest.pth')
+    ckpt_fpath = osp.join(args.model_dir, args.weight_name)
 
     if not osp.exists(args.output_dir):
         os.makedirs(args.output_dir)
