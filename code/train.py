@@ -19,7 +19,7 @@ from dataset import SceneTextDataset
 from model import EAST
 from early_stopping import EarlyStopping
 
-wandb_name = 'test'
+wandb_name = 'last_test'
 
 def seed_everything(seed):
     torch.manual_seed(seed)
@@ -37,7 +37,7 @@ def parse_args():
     parser = ArgumentParser()
 
     # Conventional args
-    parser.add_argument('--data_dir', type=str, default=os.environ.get('SM_CHANNEL_TRAIN', '../data/medical'))
+    parser.add_argument('--data_dir', type=str, default=os.environ.get('SM_CHANNEL_TRAIN', '/opt/ml/input/code/data/medical/'))
     parser.add_argument('--model_dir', type=str, default=os.environ.get('SM_MODEL_DIR',f'trained_models/{wandb_name}'))
     parser.add_argument('--device', default='cuda' if cuda.is_available() else 'cpu')
     parser.add_argument('--num_workers', type=int, default=8)
@@ -49,21 +49,23 @@ def parse_args():
     parser.add_argument('--save_interval', type=int, default=1)
     parser.add_argument('--ignore_tags', type=list, default=['masked', 'excluded-region', 'maintable', 'stamp'])
     parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--resume', type=str, default='None')
+    parser.add_argument('--weight_name', type=str, default='latest.pth') # resume이 True일 때 weight_name 활용함
+    
     args = parser.parse_args()
 
     if args.input_size % 32 != 0:
         raise ValueError('`input_size` must be a multiple of 32')
     return args
 
-
 def do_training(data_dir, model_dir, device, image_size, input_size, num_workers, batch_size,
-                learning_rate, max_epoch, save_interval, ignore_tags, seed):
+                learning_rate, max_epoch, save_interval, ignore_tags, seed, resume, weight_name):
 
     seed_everything(seed)
 
     train_dataset = SceneTextDataset(
         data_dir,
-        split='train0',
+        split='train2',
         image_size=image_size,
         crop_size=input_size,
         ignore_tags=ignore_tags
@@ -71,7 +73,7 @@ def do_training(data_dir, model_dir, device, image_size, input_size, num_workers
     
     val_dataset = SceneTextDataset(
         data_dir,
-        split='val0',
+        split='val2',
         image_size=image_size,
         crop_size=input_size,
         ignore_tags=ignore_tags
@@ -97,23 +99,36 @@ def do_training(data_dir, model_dir, device, image_size, input_size, num_workers
         drop_last=False
     )
 
+    if resume == 'True':
+        run = wandb.init(entity="oif", project='Data_Centric', name=wandb_name, resume=True)
+    else:
+        print("Training Starting...")
+        run = wandb.init(entity="oif", project='Data_Centric', name=wandb_name, resume=None)
+
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model = EAST()
     model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[max_epoch // 2], gamma=0.1)
     early_stopping = EarlyStopping(patience=10, delta=0.0, mode='min', verbose=False)
-
     best_val_loss = np.inf
-    wandb.init(entity="oif", project='Data_Centric', name=wandb_name)
-    for epoch in range(max_epoch):
+    starting_epoch = 0
+
+    if wandb.run.resumed:
+        checkpoint = torch.load(os.path.join(model_dir, weight_name))   
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        starting_epoch = checkpoint['epoch']
+        print(f"Resuming Training From Epoch {starting_epoch}...")
+
+    for epoch in range(starting_epoch, max_epoch):
         train_start = time.time()
         model.train()
         epoch_loss, epoch_loss_cls, epoch_loss_angle, epoch_loss_iou = 0, 0, 0, 0
         train_loss = 0
         val_loss = 0
         print()
-        
+
         with tqdm(total=num_batches) as pbar:
             for img, gt_score_map, gt_geo_map, roi_mask in train_loader:
                 pbar.set_description('[Epoch {}]'.format(epoch + 1)) # 진행 바 왼쪽에 Epoch 진행 상황 추가
@@ -160,11 +175,21 @@ def do_training(data_dir, model_dir, device, image_size, input_size, num_workers
                         os.makedirs(model_dir)
                     
                     ckpt_fpath = osp.join(model_dir, f'best_{epoch+1}epoch.pth')
-                    torch.save(model.state_dict(), ckpt_fpath)
+                    torch.save({
+                        'epoch': epoch+1,
+                        'model_state_dict': model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'loss': loss,
+                        'step': step,
+                        }, ckpt_fpath)
                     if osp.exists(ckpt_fpath):
                         prev_ckpt_fpath = osp.join(model_dir, f"best_{epoch}epoch.pth")
                         if osp.exists(prev_ckpt_fpath):
-                            torch.save(model.state_dict(), prev_ckpt_fpath)
+                            torch.save({
+                                'epoch': epoch,
+                                'model_state_dict': model.state_dict(),
+                                'optimizer_state_dict': optimizer.state_dict(),
+                                }, prev_ckpt_fpath)
                             os.remove(prev_ckpt_fpath)
 
                 print(f'(Val) Class loss: {extra_info["cls_loss"]:.4f}, (Val) Angle loss: {extra_info["angle_loss"]:.4f}, (Val) IoU loss: {extra_info["iou_loss"]:.4f}')
@@ -198,8 +223,12 @@ def do_training(data_dir, model_dir, device, image_size, input_size, num_workers
                 os.makedirs(model_dir)
 
             ckpt_fpath = osp.join(model_dir, 'latest.pth')
-            torch.save(model.state_dict(), ckpt_fpath)
-
+            torch.save({ 
+                        'epoch': epoch+1,
+                        'model_state_dict': model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        }, ckpt_fpath)
+            
     print("***Training Finished!***")
 
 def main(args):
