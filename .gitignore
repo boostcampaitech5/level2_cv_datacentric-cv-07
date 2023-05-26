@@ -1,6 +1,12 @@
 # 폴더 무시
 __pycache__/
-
+wandb/
+predictions/
+trained_models/
 
 # pth 파일 무시
 *.pth
+
+# configs 폴더 내 json파일 무시
+code/configs/queue/*.json
+code/configs/ends/*.json

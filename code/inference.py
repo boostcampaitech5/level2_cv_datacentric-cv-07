@@ -18,6 +18,11 @@ CHECKPOINT_EXTENSIONS = ['.pth', '.ckpt']
 
 def parse_args():
     parser = ArgumentParser()
+    
+    parser.add_argument("--config", type=str, default="./config.json", help="config file directory address")
+    args = parser.parse_args()
+    with open(args.config, "r") as f:
+        config = json.load(f)
 
     # Conventional args
     parser.add_argument('--data_dir', default=os.environ.get('SM_CHANNEL_EVAL', '../data/medical'))
@@ -25,19 +30,21 @@ def parse_args():
     parser.add_argument('--output_dir', default=os.environ.get('SM_OUTPUT_DATA_DIR', 'predictions'))
 
     parser.add_argument('--device', default='cuda' if cuda.is_available() else 'cpu')
-    parser.add_argument('--input_size', type=int, default=2048)
-    parser.add_argument('--batch_size', type=int, default=5)
+    parser.add_argument('--infer_input_size', type=int, default=config["infer_input_size"])
+    parser.add_argument('--infer_batch_size', type=int, default=config["infer_batch_size"])
+    parser.add_argument('--infer_name', type=str, default=config["infer_name"])
+    parser.add_argument('--wandb_name', type=str, default=config["wandb_name"])
 
     args = parser.parse_args()
 
-    if args.input_size % 32 != 0:
-        raise ValueError('`input_size` must be a multiple of 32')
+    if args.infer_input_size % 32 != 0:
+        raise ValueError('`infer_input_size` must be a multiple of 32')
 
     return args
 
 
-def do_inference(model, ckpt_fpath, data_dir, input_size, batch_size, split='test'):
-    model.load_state_dict(torch.load(ckpt_fpath, map_location='cpu'))
+def do_inference(model, ckpt_fpath, data_dir, infer_input_size, infer_batch_size, split='test'):
+    model.load_state_dict(torch.load(ckpt_fpath, map_location='cpu')['model_state_dict'])
     model.eval()
 
     image_fnames, by_sample_bboxes = [], []
@@ -47,12 +54,12 @@ def do_inference(model, ckpt_fpath, data_dir, input_size, batch_size, split='tes
         image_fnames.append(osp.basename(image_fpath))
 
         images.append(cv2.imread(image_fpath)[:, :, ::-1])
-        if len(images) == batch_size:
-            by_sample_bboxes.extend(detect(model, images, input_size))
+        if len(images) == infer_batch_size:
+            by_sample_bboxes.extend(detect(model, images, infer_input_size))
             images = []
 
     if len(images):
-        by_sample_bboxes.extend(detect(model, images, input_size))
+        by_sample_bboxes.extend(detect(model, images, infer_input_size))
 
     ufo_result = dict(images=dict())
     for image_fname, bboxes in zip(image_fnames, by_sample_bboxes):
@@ -65,9 +72,16 @@ def do_inference(model, ckpt_fpath, data_dir, input_size, batch_size, split='tes
 def main(args):
     # Initialize model
     model = EAST(pretrained=False).to(args.device)
+    
+    pth_dir = os.path.join('./trained_models', args.wandb_name)
 
+    pths = [file for file in os.listdir(pth_dir)]
+    for pth in pths:
+        if pth[:4] == 'best':
+            infer_pth = pth
+               
     # Get paths to checkpoint files
-    ckpt_fpath = osp.join(args.model_dir, 'latest.pth')
+    ckpt_fpath = osp.join(pth_dir, infer_pth)
 
     if not osp.exists(args.output_dir):
         os.makedirs(args.output_dir)
@@ -75,11 +89,11 @@ def main(args):
     print('Inference in progress')
 
     ufo_result = dict(images=dict())
-    split_result = do_inference(model, ckpt_fpath, args.data_dir, args.input_size,
-                                args.batch_size, split='test')
+    split_result = do_inference(model, ckpt_fpath, args.data_dir, args.infer_input_size,
+                                args.infer_batch_size, split='test')
     ufo_result['images'].update(split_result['images'])
 
-    output_fname = 'output.csv'
+    output_fname = args.infer_name
     with open(osp.join(args.output_dir, output_fname), 'w') as f:
         json.dump(ufo_result, f, indent=4)
 
