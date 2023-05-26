@@ -2,6 +2,8 @@ import os
 import os.path as osp
 import time
 import math
+import json
+import argparse
 from datetime import timedelta
 from argparse import ArgumentParser
 
@@ -19,8 +21,6 @@ from dataset import SceneTextDataset
 from model import EAST
 from early_stopping import EarlyStopping
 
-wandb_name = 'last_test'
-
 def seed_everything(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
@@ -35,48 +35,82 @@ def log_wandb(step, loss, metrics):
 
 def parse_args():
     parser = ArgumentParser()
-
-    # Conventional args
-    parser.add_argument('--data_dir', type=str, default=os.environ.get('SM_CHANNEL_TRAIN', '/opt/ml/input/code/data/medical/'))
-    parser.add_argument('--model_dir', type=str, default=os.environ.get('SM_MODEL_DIR',f'trained_models/{wandb_name}'))
-    parser.add_argument('--device', default='cuda' if cuda.is_available() else 'cpu')
-    parser.add_argument('--num_workers', type=int, default=8)
-    parser.add_argument('--image_size', type=int, default=2048)
-    parser.add_argument('--input_size', type=int, default=1024)
-    parser.add_argument('--batch_size', type=int, default=8)
-    parser.add_argument('--learning_rate', type=float, default=1e-3)
-    parser.add_argument('--max_epoch', type=int, default=150)
-    parser.add_argument('--save_interval', type=int, default=1)
-    parser.add_argument('--ignore_tags', type=list, default=['masked', 'excluded-region', 'maintable', 'stamp'])
-    parser.add_argument('--seed', type=int, default=42)
-    parser.add_argument('--resume', type=str, default='None')
-    parser.add_argument('--weight_name', type=str, default='latest.pth') # resume이 True일 때 weight_name 활용함
     
+    parser.add_argument("--config", type=str, default="./config.json", help="config file directory address")
     args = parser.parse_args()
-
+    with open(args.config, "r") as f:
+        config = json.load(f)
+    
+    # Conventional args
+    parser.add_argument('--wandb_name', type=str, default=config["wandb_name"])
+    parser.add_argument('--fold_num', type=str, default=config["fold_num"])
+    parser.add_argument('--max_epoch', type=int, default=config["max_epoch"])
+    parser.add_argument('--learning_rate', type=float, default=config["learning_rate"])
+    parser.add_argument('--patience', type=int, default=config["patience"])
+    parser.add_argument('--delta', type=float, default=config["delta"])
+    parser.add_argument('--save_interval', type=int, default=config["save_interval"])
+    parser.add_argument('--seed', type=int, default=config["seed"])
+    parser.add_argument('--batch_size', type=int, default=config["batch_size"])
+    parser.add_argument('--num_workers', type=int, default=config["num_workers"])
+    parser.add_argument('--image_size', type=int, default=config["image_size"])
+    parser.add_argument('--input_size', type=int, default=config["input_size"])
+    parser.add_argument('--ignore_tags', type=list, default=config["ignore_tags"])
+    parser.add_argument('--data_dir', type=str, default=config["data_dir"])
+    
+    parser.add_argument('--train_ignore_under_threshold', type=int, default=config["train_ignore_under_threshold"])
+    parser.add_argument('--train_drop_under_threshold', type=int, default=config["train_drop_under_threshold"])
+    parser.add_argument('--train_color_jitter', type=bool, default=config["train_color_jitter"])
+    parser.add_argument('--train_normalize', type=bool, default=config["train_normalize"])
+    parser.add_argument('--val_ignore_under_threshold', type=int, default=config["val_ignore_under_threshold"])
+    parser.add_argument('--val_drop_under_threshold', type=int, default=config["val_drop_under_threshold"])
+    parser.add_argument('--val_color_jitter', type=bool, default=config["val_color_jitter"])
+    parser.add_argument('--val_normalize', type=bool, default=config["val_normalize"])
+    
+    parser.add_argument('--resume', type=bool, default=config["resume"])
+    parser.add_argument('--weight_name', type=str, default=config["weight_name"])
+    
+    parser.add_argument('--device', default='cuda' if cuda.is_available() else 'cpu')
+    args = parser.parse_args()
+    print(args)
     if args.input_size % 32 != 0:
         raise ValueError('`input_size` must be a multiple of 32')
     return args
 
-def do_training(data_dir, model_dir, device, image_size, input_size, num_workers, batch_size,
-                learning_rate, max_epoch, save_interval, ignore_tags, seed, resume, weight_name):
+
+def do_training(data_dir, device, image_size, input_size, num_workers, batch_size,
+                learning_rate, max_epoch, save_interval, ignore_tags, seed, wandb_name, fold_num,
+                patience, delta, train_ignore_under_threshold, train_drop_under_threshold, train_color_jitter,
+                train_normalize, val_ignore_under_threshold, val_drop_under_threshold, val_color_jitter,
+                val_normalize, resume, weight_name, config):
 
     seed_everything(seed)
+    
+    model_dir = os.path.join('./trained_models',wandb_name)
+    data_dir = os.environ.get('SM_CHANNEL_TRAIN', data_dir)
+
 
     train_dataset = SceneTextDataset(
         data_dir,
-        split='train2',
+        split=f"train{fold_num}",
         image_size=image_size,
         crop_size=input_size,
-        ignore_tags=ignore_tags
+        ignore_tags=ignore_tags,
+        ignore_under_threshold=train_ignore_under_threshold,
+        drop_under_threshold=train_drop_under_threshold,
+        color_jitter=train_color_jitter,
+        normalize=train_normalize
     )
     
     val_dataset = SceneTextDataset(
         data_dir,
-        split='val2',
+        split=f"val{fold_num}",
         image_size=image_size,
         crop_size=input_size,
-        ignore_tags=ignore_tags
+        ignore_tags=ignore_tags,
+        ignore_under_threshold=val_ignore_under_threshold,
+        drop_under_threshold=val_drop_under_threshold,
+        color_jitter=val_color_jitter,
+        normalize=val_normalize
     )
 
     train_dataset = EASTDataset(train_dataset)
@@ -98,8 +132,8 @@ def do_training(data_dir, model_dir, device, image_size, input_size, num_workers
         num_workers=num_workers,
         drop_last=False
     )
-
-    if resume == 'True':
+    
+    if resume:
         run = wandb.init(entity="oif", project='Data_Centric', name=wandb_name, resume=True)
     else:
         print("Training Starting...")
@@ -110,25 +144,28 @@ def do_training(data_dir, model_dir, device, image_size, input_size, num_workers
     model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=[max_epoch // 2], gamma=0.1)
-    early_stopping = EarlyStopping(patience=10, delta=0.0, mode='min', verbose=False)
+    early_stopping = EarlyStopping(patience=patience, delta=delta, mode='min', verbose=False)
+
+    prev_ckpt_fpath = osp.join(model_dir, f'best_0epoch.pth') # dummy
+    
     best_val_loss = np.inf
     starting_epoch = 0
-
+    
     if wandb.run.resumed:
         checkpoint = torch.load(os.path.join(model_dir, weight_name))   
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         starting_epoch = checkpoint['epoch']
         print(f"Resuming Training From Epoch {starting_epoch}...")
-
-    for epoch in range(starting_epoch, max_epoch):
+    
+    for epoch in range(max_epoch):
         train_start = time.time()
         model.train()
         epoch_loss, epoch_loss_cls, epoch_loss_angle, epoch_loss_iou = 0, 0, 0, 0
         train_loss = 0
         val_loss = 0
         print()
-
+        
         with tqdm(total=num_batches) as pbar:
             for img, gt_score_map, gt_geo_map, roi_mask in train_loader:
                 pbar.set_description('[Epoch {}]'.format(epoch + 1)) # 진행 바 왼쪽에 Epoch 진행 상황 추가
@@ -165,7 +202,9 @@ def do_training(data_dir, model_dir, device, image_size, input_size, num_workers
                 print("\nEvaluating validation results...")
                 for img, gt_score_map, gt_geo_map, roi_mask in val_loader:
                     loss, extra_info = model.train_step(img, gt_score_map, gt_geo_map, roi_mask)
-                    val_loss += loss.item()
+                    temp = loss.item()
+                    val_loss += temp
+                    wandb.log({"val_loss": temp})
 
                 mean_val_loss = val_loss / num_batches
                 if best_val_loss > mean_val_loss:
@@ -182,15 +221,9 @@ def do_training(data_dir, model_dir, device, image_size, input_size, num_workers
                         'loss': loss,
                         'step': step,
                         }, ckpt_fpath)
-                    if osp.exists(ckpt_fpath):
-                        prev_ckpt_fpath = osp.join(model_dir, f"best_{epoch}epoch.pth")
-                        if osp.exists(prev_ckpt_fpath):
-                            torch.save({
-                                'epoch': epoch,
-                                'model_state_dict': model.state_dict(),
-                                'optimizer_state_dict': optimizer.state_dict(),
-                                }, prev_ckpt_fpath)
-                            os.remove(prev_ckpt_fpath)
+                    if osp.exists(prev_ckpt_fpath):
+                        os.remove(prev_ckpt_fpath)
+                    prev_ckpt_fpath = osp.join(model_dir, f'best_{epoch+1}epoch.pth')
 
                 print(f'(Val) Class loss: {extra_info["cls_loss"]:.4f}, (Val) Angle loss: {extra_info["angle_loss"]:.4f}, (Val) IoU loss: {extra_info["iou_loss"]:.4f}')
 
@@ -228,7 +261,7 @@ def do_training(data_dir, model_dir, device, image_size, input_size, num_workers
                         'model_state_dict': model.state_dict(),
                         'optimizer_state_dict': optimizer.state_dict(),
                         }, ckpt_fpath)
-            
+
     print("***Training Finished!***")
 
 def main(args):
