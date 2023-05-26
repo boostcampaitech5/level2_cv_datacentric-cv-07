@@ -68,6 +68,7 @@ def parse_args():
     
     parser.add_argument('--resume', type=bool, default=config["resume"])
     parser.add_argument('--weight_name', type=str, default=config["weight_name"])
+    parser.add_argument('--run_id', type=str, default=config["run_id"])
     
     parser.add_argument('--device', default='cuda' if cuda.is_available() else 'cpu')
     args = parser.parse_args()
@@ -81,7 +82,7 @@ def do_training(data_dir, device, image_size, input_size, num_workers, batch_siz
                 learning_rate, max_epoch, save_interval, ignore_tags, seed, wandb_name, fold_num,
                 patience, delta, train_ignore_under_threshold, train_drop_under_threshold, train_color_jitter,
                 train_normalize, val_ignore_under_threshold, val_drop_under_threshold, val_color_jitter,
-                val_normalize, resume, weight_name, config):
+                val_normalize, resume, weight_name, run_id, config):
 
     seed_everything(seed)
     
@@ -134,6 +135,11 @@ def do_training(data_dir, device, image_size, input_size, num_workers, batch_siz
     )
     
     if resume:
+        dict_run_id = {"run_id": run_id}
+        json_data = json.dumps(dict_run_id)
+        with open('./wandb/wandb-resume.json', 'w') as f:
+            f.write(json_data)
+        
         run = wandb.init(entity="oif", project='Data_Centric', name=wandb_name, resume=True)
     else:
         print("Training Starting...")
