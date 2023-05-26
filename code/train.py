@@ -177,7 +177,7 @@ def do_training(data_dir, device, image_size, input_size, num_workers, batch_siz
                 pbar.set_description('[Epoch {}]'.format(epoch + 1)) # 진행 바 왼쪽에 Epoch 진행 상황 추가
 
                 loss, extra_info1 = model.train_step(img, gt_score_map, gt_geo_map, roi_mask)
-                optimizer.zero_grad()
+                optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 optimizer.step()
 
