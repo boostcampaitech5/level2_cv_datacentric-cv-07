@@ -162,6 +162,10 @@ def do_training(data_dir, device, image_size, input_size, num_workers, batch_siz
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         starting_epoch = checkpoint['epoch']
+        try:
+            best_val_loss = checkpoint['best_validation_loss']
+        except:
+            pass
         print(f"Resuming Training From Epoch {starting_epoch}...")
     
     for epoch in range(max_epoch):
@@ -224,6 +228,7 @@ def do_training(data_dir, device, image_size, input_size, num_workers, batch_siz
                         'epoch': epoch+1,
                         'model_state_dict': model.state_dict(),
                         'optimizer_state_dict': optimizer.state_dict(),
+                        'best_validation_loss': best_val_loss,
                         'loss': loss,
                         'step': step,
                         }, ckpt_fpath)
@@ -266,6 +271,7 @@ def do_training(data_dir, device, image_size, input_size, num_workers, batch_siz
                         'epoch': epoch+1,
                         'model_state_dict': model.state_dict(),
                         'optimizer_state_dict': optimizer.state_dict(),
+                        'best_validation_loss': best_val_loss,
                         }, ckpt_fpath)
 
     print("***Training Finished!***")
