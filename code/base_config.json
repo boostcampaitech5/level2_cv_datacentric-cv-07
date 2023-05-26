@@ -29,7 +29,7 @@
     "infer_input_size": 2048,
     "infer_batch_size": 5,
     "infer_name": "output.csv",
-    "resume": 1,
+    "resume": 0,
     "weight_name": "latest.pth",
-    "run_id": "vk74tw9b"
+    "run_id": "abcd1234"
 }
