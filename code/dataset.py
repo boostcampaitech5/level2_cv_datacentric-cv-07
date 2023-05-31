@@ -9,6 +9,8 @@ import cv2
 import albumentations as A
 from torch.utils.data import Dataset
 from shapely.geometry import Polygon
+import random
+import matplotlib.pyplot as plt
 
 
 def cal_distance(x1, y1, x2, y2):
@@ -332,6 +334,10 @@ def filter_vertices(vertices, labels, ignore_under=0, drop_under=0):
 
     return new_vertices, new_labels
 
+def rotate(x1, y1, x0, y0, a): # rotate point p1 around p0 by angle a
+    x2 = ((x1 - x0) * math.cos(a)) - ((y1 - y0) * math.sin(a)) + x0
+    y2 = ((x1 - x0) * math.sin(a)) + ((y1 - y0) * math.cos(a)) + y0
+    return (x2, y2)
 
 class SceneTextDataset(Dataset):
     def __init__(self, root_dir,
@@ -342,7 +348,9 @@ class SceneTextDataset(Dataset):
                  ignore_under_threshold=10,
                  drop_under_threshold=1,
                  color_jitter=True,
-                 normalize=True):
+                 normalize=True,
+                 cutmix=True,
+                 label_resize_p = 1.0):
         with open(osp.join(root_dir, 'ufo/{}.json'.format(split)), 'r') as f:
             anno = json.load(f)
 
@@ -352,6 +360,8 @@ class SceneTextDataset(Dataset):
 
         self.image_size, self.crop_size = image_size, crop_size
         self.color_jitter, self.normalize = color_jitter, normalize
+        self.cutmix = cutmix
+        self.label_resize_p = label_resize_p
 
         self.ignore_tags = ignore_tags
 
@@ -399,13 +409,91 @@ class SceneTextDataset(Dataset):
         image = np.array(image)
 
         funcs = []
+
+        # Style Transformation
         if self.color_jitter:
             funcs.append(A.ColorJitter(0.5, 0.5, 0.5, 0.25))
         if self.normalize:
             funcs.append(A.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)))
         transform = A.Compose(funcs)
-
+        
         image = transform(image=image)['image']
+        word_bboxes = np.reshape(vertices, (-1, 4, 2))
+    
+        #Geometric Transformation
+        if self.cutmix:
+            small_box = []
+            image_cloned = image.copy()
+            try:
+                for i in word_bboxes:
+                    point1 = np.array(i, np.int32)
+                    max = np.max(point1, axis=0)
+                    min = np.min(point1, axis=0)
+                    small_box.append((max, min)) 
+                
+                for x in random.sample(small_box, 10):
+                    random_x1 = random.randrange(100, 800)
+                    random_y1 = random.randrange(100, 800)
+                    
+                    max_x = x[0][0].item()
+                    max_y = x[0][1].item()
+                    min_x = x[1][0].item()
+                    min_y = x[1][1].item()
+                    
+                    if np.max([min_x, max_x, min_y, max_y]) > 1024 or np.min([min_x, max_x, min_y, max_y]) < 0: # 짤린 label 제거
+                        continue
+                    
+                    width = round(max_x - min_x)
+                    height = round(max_y - min_y)
+                    if (height >= width):
+                        dst = image_cloned[min_y-1:max_y+1, min_x-1:max_x+1]
+                        if random.random() <= self.label_resize_p:
+                            dst = cv2.resize(dst, dsize=(25, 25), interpolation=cv2.INTER_AREA)
+                        shape = dst.shape
+
+                        dst = cv2.rotate(dst, cv2.ROTATE_90_COUNTERCLOCKWISE)
+                        
+                        word_bboxes_vertices = np.array([[random_y1, random_x1],
+                                                        [random_y1+shape[1], random_x1],
+                                                        [random_y1+shape[1], random_x1+shape[0]],
+                                                        [random_y1, random_x1+shape[0]]])
+                                                        
+                        word_bboxes_vertices = np.reshape(word_bboxes_vertices, (8,))
+                        word_bboxes_vertices = rotate_vertices(word_bboxes_vertices, -1.57)
+
+                        word_bboxes_vertices_a = np.reshape(word_bboxes_vertices, (4,2))
+                        max = np.max(word_bboxes_vertices_a, axis=0).astype(int)
+                        min = np.min(word_bboxes_vertices_a, axis=0).astype(int)
+                        
+                        image_cloned[min[1]:max[1], min[0]:max[0]] = dst # y, x format
+                        vertices = np.concatenate((vertices,[word_bboxes_vertices]), axis=0)
+                        
+                        image = image_cloned.copy()
+                    else:
+                        dst = image_cloned[min_y-1:max_y+1, min_x-1:max_x+1] # bounding box region
+                        if random.random() <= self.label_resize_p:
+                            dst = cv2.resize(dst, dsize=(150, 50), interpolation=cv2.INTER_AREA) 
+                        shape = dst.shape
+
+                        dst = cv2.rotate(dst, cv2.ROTATE_90_COUNTERCLOCKWISE)
+                        word_bboxes_vertices = np.array([[random_y1, random_x1],
+                                                        [random_y1+shape[1], random_x1],
+                                                        [random_y1+shape[1], random_x1+shape[0]],
+                                                        [random_y1, random_x1+shape[0]]])
+                    
+                        word_bboxes_vertices = np.reshape(word_bboxes_vertices, (8,))
+                        word_bboxes_vertices = rotate_vertices(word_bboxes_vertices, -1.57)
+
+                        word_bboxes_vertices_a = np.reshape(word_bboxes_vertices, (4,2))
+                        max = np.max(word_bboxes_vertices_a, axis=0).astype(int)
+                        min = np.min(word_bboxes_vertices_a, axis=0).astype(int)
+                        
+                        image_cloned[min[1]:max[1], min[0]:max[0]] = dst # y, x format
+                        vertices = np.concatenate((vertices,[word_bboxes_vertices]), axis=0)
+
+                        image = image_cloned.copy()
+            except: 
+                pass
         word_bboxes = np.reshape(vertices, (-1, 4, 2))
         roi_mask = generate_roi_mask(image, vertices, labels)
 
