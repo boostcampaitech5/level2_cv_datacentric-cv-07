@@ -54,7 +54,6 @@
 
 ### Ensemble
 
-<br>
 
   - 이번 글자 검출 과제에서 기존 Object Detection에서 이용하는 Weighted Boxes Fusion과 같은 방법을  그대로 이용하기에 몇 가지 어려운 측면들이 있어 과제에 적용 가능하도록 과정을 Custom 하였다.
 
@@ -100,8 +99,8 @@
 
 
 ### 최종 순위
-- 🥈 **Public LB : 4nd / 19**
+- 🥈 **Public LB : 3nd / 19**
 <img width="869" alt="스크린샷 2023-06-18 오후 10 28 58" src="https://github.com/boostcampaitech5/level2_cv_datacentric-cv-07/assets/113488324/bedd196b-e026-4623-8ff8-35f92b8e8c7b">
 
-- 🥈 **Private LB : 3nd / 19**
+- 🥈 **Private LB : 4nd / 19**
 <img width="871" alt="스크린샷 2023-06-18 오후 10 29 56" src="https://github.com/boostcampaitech5/level2_cv_datacentric-cv-07/assets/113488324/c85a0163-6c3f-4d08-afd6-8f8299c70096">
